@@ -1,7 +1,6 @@
-# Git
-.git
-.gitignore
-.gitmodules
+# Git metadata is intentionally kept in the NAS image.
+# Hermes dashboard/update runs `hermes update` from /opt/hermes and requires a
+# real git checkout there. Runtime secrets still live in /opt/data, not here.
 
 # Dependencies
 node_modules
@@ -15,13 +14,11 @@ node_modules
 ui-tui/dist/
 ui-tui/packages/hermes-ink/dist/
 
-# CI/CD
-.github
-
 # Environment files
 .env
 
-*.md
+*.bak
+*.bak-*
 
 # Runtime data (bind-mounted at /opt/data; must not leak into build context)
 data/

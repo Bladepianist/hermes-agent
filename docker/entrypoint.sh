@@ -45,6 +45,15 @@ if [ "$(id -u)" = "0" ]; then
             echo "Warning: chown .venv failed (rootless container?) — continuing anyway"
     fi
 
+    # The NAS image keeps the Hermes git checkout in /opt/hermes so dashboard
+    # updates can run from the UI. If the runtime UID is remapped to the NAS
+    # user, make the checkout writable before dropping privileges.
+    if [ -n "$HERMES_UID" ] && [ "$HERMES_UID" != "10000" ]; then
+        echo "Fixing ownership of $INSTALL_DIR to hermes ($actual_hermes_uid)"
+        chown -R hermes:hermes "$INSTALL_DIR" 2>/dev/null || \
+            echo "Warning: chown failed for $INSTALL_DIR — dashboard updates may fail"
+    fi
+
     # Ensure config.yaml is readable by the hermes runtime user even if it was
     # edited on the host after initial ownership setup. Must run here (as root)
     # rather than after the gosu drop, otherwise a non-root caller like
@@ -60,6 +69,10 @@ fi
 
 # --- Running as hermes from here ---
 source "${INSTALL_DIR}/.venv/bin/activate"
+
+# The checkout is owned by the remapped NAS user at runtime. Mark it safe for
+# git so `hermes update` works from the dashboard and messaging commands.
+git config --global --add safe.directory "$INSTALL_DIR" >/dev/null 2>&1 || true
 
 # Create essential directory structure.  Cache and platform directories
 # (cache/images, cache/audio, platforms/whatsapp, etc.) are created on
