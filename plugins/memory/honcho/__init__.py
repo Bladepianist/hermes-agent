@@ -1299,7 +1299,24 @@ class HonchoMemoryProvider(MemoryProvider):
                 ok = self._manager.create_conclusion(self._session_key, conclusion, peer=peer)
                 if ok:
                     return json.dumps({"result": f"Conclusion saved for {peer}: {conclusion}"})
-                return tool_error("Failed to save conclusion.")
+
+                # Self-hosted Honcho deployments without OpenAI-backed reasoning can
+                # reject the native conclusions endpoint while still supporting the
+                # first-class peer-card API. The user explicitly does not want OpenAI
+                # APIs used; preserve durable memory by appending the fact to the peer
+                # card instead of failing the tool.
+                card = self._manager.get_peer_card(self._session_key, peer=peer)
+                if conclusion not in card:
+                    card = [*card, conclusion]
+                result = self._manager.set_peer_card(self._session_key, card, peer=peer)
+                if result is not None:
+                    return json.dumps({
+                        "result": f"Conclusion saved for {peer} via peer card fallback: {conclusion}",
+                        "fallback": "peer_card",
+                        "card": result,
+                    })
+
+                return tool_error("Failed to save conclusion; native conclusions failed and peer-card fallback failed.")
 
             return tool_error(f"Unknown tool: {tool_name}")
 

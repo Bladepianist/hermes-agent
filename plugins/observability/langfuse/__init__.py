@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import re
+import hashlib
 import threading
 import time
 from dataclasses import dataclass, field
@@ -34,9 +35,13 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 try:
-    from langfuse import Langfuse, propagate_attributes
+    from langfuse import Langfuse
 except Exception:  # pragma: no cover - fail-open when optional dep is missing
     Langfuse = None
+
+try:
+    from langfuse import propagate_attributes
+except Exception:  # Langfuse SDK v2 does not expose OTEL propagate_attributes
     propagate_attributes = None
 
 
@@ -86,6 +91,60 @@ def _debug(message: str) -> None:
 _INIT_FAILED = object()
 
 
+class _LangfuseV2TraceWrapper:
+    """Tiny compatibility layer for Langfuse SDK v2 / Langfuse server v2.
+
+    Hermes' bundled plugin was written against the OTEL-style SDK API
+    introduced in newer Langfuse clients (``start_as_current_observation``).
+    Self-hosted Langfuse v2.x installations still need the legacy SDK v2 API
+    (``trace().generation()`` / ``trace().span()``), otherwise spans are sent
+    to OTLP endpoints that v2 servers return as 404.  This wrapper presents
+    the small root-observation surface the rest of this file uses.
+    """
+
+    def __init__(self, trace: Any):
+        self._trace = trace
+
+    def start_observation(
+        self,
+        *,
+        name: str,
+        as_type: str,
+        input: Any = None,
+        metadata: Optional[dict] = None,
+        model: Optional[str] = None,
+        model_parameters: Optional[dict] = None,
+    ) -> Any:
+        kwargs: Dict[str, Any] = {
+            "name": name,
+            "input": input,
+            "metadata": metadata or {},
+        }
+        if as_type == "generation":
+            if model:
+                kwargs["model"] = model
+            if model_parameters:
+                kwargs["model_parameters"] = model_parameters
+            return self._trace.generation(**kwargs)
+        return self._trace.span(**kwargs)
+
+    def set_trace_io(self, *, input: Any = None, output: Any = None) -> None:
+        kwargs: Dict[str, Any] = {}
+        if input is not None:
+            kwargs["input"] = input
+        if output is not None:
+            kwargs["output"] = output
+        if kwargs:
+            self._trace.update(**kwargs)
+
+    def update(self, **kwargs: Any) -> None:
+        self._trace.update(**kwargs)
+
+    def end(self) -> None:
+        # Legacy trace clients do not have an explicit end operation.
+        return None
+
+
 def _get_langfuse() -> Optional[Langfuse]:
     """Return a cached Langfuse client, or ``None`` if unavailable.
 
@@ -119,8 +178,10 @@ def _get_langfuse() -> Optional[Langfuse]:
     kwargs: Dict[str, Any] = {
         "public_key": public_key,
         "secret_key": secret_key,
-        "base_url": base_url,
     }
+    # Langfuse SDK v3/v4 use ``base_url``. SDK v2 (needed for Langfuse server
+    # v2.x) uses ``host`` and raises TypeError for ``base_url``.
+    kwargs["base_url"] = base_url
     if environment:
         kwargs["environment"] = environment
     if release:
@@ -132,7 +193,14 @@ def _get_langfuse() -> Optional[Langfuse]:
             logger.warning("Invalid HERMES_LANGFUSE_SAMPLE_RATE=%r", sample_rate)
 
     try:
-        _LANGFUSE_CLIENT = Langfuse(**kwargs)
+        try:
+            _LANGFUSE_CLIENT = Langfuse(**kwargs)
+        except TypeError as exc:
+            if "base_url" not in str(exc):
+                raise
+            legacy_kwargs = dict(kwargs)
+            legacy_kwargs["host"] = legacy_kwargs.pop("base_url")
+            _LANGFUSE_CLIENT = Langfuse(**legacy_kwargs)
     except Exception as exc:  # pragma: no cover - fail-open
         logger.warning("Could not initialize Langfuse client: %s", exc)
         _LANGFUSE_CLIENT = _INIT_FAILED
@@ -444,7 +512,12 @@ def _usage_and_cost(response: Any, *, provider: str, api_mode: str, model: str, 
 
 def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform: str, provider: str, model: str,
                       api_mode: str, messages: Any, client: Langfuse) -> TraceState:
-    trace_id = client.create_trace_id(seed=f"{session_id or 'sessionless'}::{task_id or task_key}")
+    seed = f"{session_id or 'sessionless'}::{task_id or task_key}"
+    trace_id = (
+        client.create_trace_id(seed=seed)
+        if hasattr(client, "create_trace_id")
+        else hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
+    )
     trace_input = _extract_last_user_message(messages)
     metadata = {
         "source": "hermes",
@@ -460,7 +533,18 @@ def _start_root_trace(task_key: str, *, task_id: str, session_id: str, platform:
     if session_id:
         trace_ctx["session_id"] = session_id
 
-    if propagate_attributes is not None:
+    if not hasattr(client, "start_as_current_observation"):
+        trace = client.trace(
+            id=trace_id,
+            name="Hermes turn",
+            session_id=session_id or task_key,
+            input=trace_input,
+            metadata=metadata,
+            tags=["hermes", "langfuse"],
+        )
+        root_ctx = None
+        root_span = _LangfuseV2TraceWrapper(trace)
+    elif propagate_attributes is not None:
         try:
             with propagate_attributes(
                 session_id=session_id or task_key,

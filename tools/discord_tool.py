@@ -454,6 +454,47 @@ def _create_thread(
     })
 
 
+def _create_category(token: str, guild_id: str, name: str, **_kwargs: Any) -> str:
+    """Create a category channel in a guild."""
+    channel = _discord_request(
+        "POST",
+        f"/guilds/{guild_id}/channels",
+        token,
+        body={"name": name, "type": 4},
+    )
+    return json.dumps({
+        "success": True,
+        "channel_id": channel["id"],
+        "name": channel.get("name"),
+        "type": _channel_type_name(channel.get("type", 4)),
+    })
+
+
+def _create_channel(
+    token: str,
+    guild_id: str,
+    name: str,
+    parent_id: Optional[str] = None,
+    topic: Optional[str] = None,
+    **_kwargs: Any,
+) -> str:
+    """Create a text channel in a guild, optionally inside a category."""
+    body: Dict[str, Any] = {"name": name, "type": 0}
+    if parent_id:
+        body["parent_id"] = parent_id
+    if topic:
+        body["topic"] = topic
+    channel = _discord_request("POST", f"/guilds/{guild_id}/channels", token, body=body)
+    return json.dumps({
+        "success": True,
+        "channel_id": channel["id"],
+        "name": channel.get("name"),
+        "type": _channel_type_name(channel.get("type", 0)),
+        "parent_id": channel.get("parent_id"),
+        "topic": channel.get("topic"),
+    })
+
+
 def _add_role(token: str, guild_id: str, user_id: str, role_id: str, **_kwargs: Any) -> str:
     """Add a role to a guild member."""
     _discord_request("PUT", f"/guilds/{guild_id}/members/{user_id}/roles/{role_id}", token)
@@ -484,6 +525,8 @@ _ACTIONS = {
     "unpin_message": _unpin_message,
     "delete_message": _delete_message,
     "create_thread": _create_thread,
+    "create_category": _create_category,
+    "create_channel": _create_channel,
     "add_role": _add_role,
     "remove_role": _remove_role,
 }
@@ -511,6 +554,8 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("unpin_message", "(channel_id, message_id)", "unpin a message"),
     ("delete_message", "(channel_id, message_id)", "delete a message"),
     ("create_thread", "(channel_id, name)", "create a public thread; optional message_id anchor"),
+    ("create_category", "(guild_id, name)", "create a category channel"),
+    ("create_channel", "(guild_id, name)", "create a text channel; optional parent_id/topic"),
     ("add_role", "(guild_id, user_id, role_id)", "assign a role"),
     ("remove_role", "(guild_id, user_id, role_id)", "remove a role"),
 ]
@@ -532,6 +577,8 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
     "unpin_message": ["channel_id", "message_id"],
     "delete_message": ["channel_id", "message_id"],
     "create_thread": ["channel_id", "name"],
+    "create_category": ["guild_id", "name"],
+    "create_channel": ["guild_id", "name"],
     "add_role": ["guild_id", "user_id", "role_id"],
     "remove_role": ["guild_id", "user_id", "role_id"],
 }
@@ -691,7 +738,15 @@ def _build_schema(
         },
         "name": {
             "type": "string",
-            "description": "New thread name (create_thread).",
+            "description": "New thread/category/channel name.",
+        },
+        "parent_id": {
+            "type": "string",
+            "description": "Parent category channel ID for create_channel.",
+        },
+        "topic": {
+            "type": "string",
+            "description": "Text channel topic for create_channel.",
         },
         "limit": {
             "type": "integer",
@@ -835,6 +890,8 @@ def _run_discord_action(
     message_id: str = "",
     query: str = "",
     name: str = "",
+    parent_id: str = "",
+    topic: str = "",
     limit: int = 50,
     before: str = "",
     after: str = "",
@@ -872,6 +929,8 @@ def _run_discord_action(
         "message_id": message_id,
         "query": query,
         "name": name,
+        "parent_id": parent_id,
+        "topic": topic,
     }
 
     missing = [p for p in _REQUIRED_PARAMS.get(action, []) if not local_vars.get(p)]
@@ -890,6 +949,8 @@ def _run_discord_action(
             message_id=message_id,
             query=query,
             name=name,
+            parent_id=parent_id,
+            topic=topic,
             limit=limit,
             before=before,
             after=after,
@@ -922,7 +983,8 @@ def discord_admin_handler(action: str, **kwargs) -> str:
 _HANDLER_DEFAULTS = {
     "action": "", "guild_id": "", "channel_id": "", "user_id": "",
     "role_id": "", "message_id": "", "query": "", "name": "",
-    "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
+    "parent_id": "", "topic": "", "limit": 50, "before": "", "after": "",
+    "auto_archive_duration": 1440,
 }
 
 

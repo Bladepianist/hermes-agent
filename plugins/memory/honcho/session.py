@@ -1017,7 +1017,18 @@ class HonchoSessionManager:
 
         try:
             observer_peer_id, target_peer_id = self._resolve_observer_target(session, peer)
-            return self._fetch_peer_card(observer_peer_id, target=target_peer_id)
+            card = self._fetch_peer_card(observer_peer_id, target=target_peer_id)
+            if card:
+                return card
+
+            # Honcho's first-class peer card is stored on the target peer itself.
+            # In non-OpenAI/self-hosted deployments the observer->target card may
+            # stay empty because dialectic reasoning is unavailable, while direct
+            # set_card/get_card still works. Fall back to the target peer's self-card.
+            direct_peer_id = target_peer_id or observer_peer_id
+            if direct_peer_id != observer_peer_id or target_peer_id is None:
+                return self._fetch_peer_card(direct_peer_id)
+            return []
         except Exception as e:
             logger.debug("Failed to fetch peer card from Honcho: %s", e)
             return []
