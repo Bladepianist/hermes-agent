@@ -187,6 +187,13 @@ RUN chmod -R a+rX /opt/hermes && \
 # this a fast (~1s) egg-link creation with no resolution or downloads.
 RUN uv pip install --no-cache-dir --no-deps -e "."
 
+# NAS: honcho is lazy-installed upstream at first memory use; the NAS image has
+# no runtime pip module, so install it eagerly.
+RUN uv pip install --no-cache-dir honcho-ai==2.0.1
+
+# NAS: ensure ui-tui is readable/writable by the remapped runtime user.
+RUN chmod -R u+rwX,go+rX /opt/hermes/ui-tui
+
 # ---------- Bake build-time git revision ----------
 # .dockerignore excludes .git, so `git rev-parse HEAD` from inside the
 # container always returns nothing — meaning `hermes dump` reports
